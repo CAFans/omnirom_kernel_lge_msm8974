@@ -723,7 +723,8 @@ int ping_v4_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		if (msg->msg_namelen < sizeof(*usin))
 			return -EINVAL;
 		if (usin->sin_family != AF_INET)
-			return -EAFNOSUPPORT;
+			return -EAFNOSUPPORT; // fixed cts fail about libcore.io.OsTest#test_socketPing
+
 		daddr = usin->sin_addr.s_addr;
 		/* no remote port */
 	} else {
@@ -864,13 +865,6 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	if (flags & MSG_OOB)
 		goto out;
 
-	if (addr_len) {
-		if (family == AF_INET)
-			*addr_len = sizeof(*sin);
-		else if (family == AF_INET6 && addr_len)
-			*addr_len = sizeof(*sin6);
-	}
-
 	if (flags & MSG_ERRQUEUE) {
 		if (family == AF_INET) {
 			return ip_recv_error(sk, msg, len);
@@ -901,12 +895,16 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	/* Copy the address and add cmsg data. */
 	if (family == AF_INET) {
 		sin = (struct sockaddr_in *) msg->msg_name;
+
+/* 2014-03-25, jk.soh@lge.com, LGP_DATA_QC_CR_SECURITY_PATCH_PING start */
 		if (sin) {
 			sin->sin_family = AF_INET;
 			sin->sin_port = 0 /* skb->h.uh->source */;
 			sin->sin_addr.s_addr = ip_hdr(skb)->saddr;
 			memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
+			*addr_len = sizeof(*sin);
 		}
+/* 2014-03-25, jk.soh@lge.com, LGP_DATA_QC_CR_SECURITY_PATCH_PING end */
 
 		if (isk->cmsg_flags)
 			ip_cmsg_recv(msg, skb);
@@ -916,12 +914,15 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		struct ipv6_pinfo *np = inet6_sk(sk);
 		struct ipv6hdr *ip6 = ipv6_hdr(skb);
 		sin6 = (struct sockaddr_in6 *) msg->msg_name;
+
+		/* 2014-03-25, jk.soh@lge.com, LGP_DATA_QC_CR_SECURITY_PATCH_PING start */
 		if (sin6) {
 			sin6->sin6_family = AF_INET6;
 			sin6->sin6_port = 0;
 			sin6->sin6_addr = ip6->saddr;
-
+			*addr_len = sizeof(*sin6);
 			sin6->sin6_flowinfo = 0;
+
 			if (np->sndflow)
 				sin6->sin6_flowinfo =
 					*(__be32 *)ip6 & IPV6_FLOWINFO_MASK;
@@ -929,6 +930,7 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			sin6->sin6_scope_id = ipv6_iface_scope_id(&sin6->sin6_addr,
 								  IP6CB(skb)->iif);
 		}
+		/* 2014-03-25, jk.soh@lge.com, LGP_DATA_QC_CR_SECURITY_PATCH_PING end */
 
 		if (inet6_sk(sk)->rxopt.all)
 			pingv6_ops.datagram_recv_ctl(sk, msg, skb);
