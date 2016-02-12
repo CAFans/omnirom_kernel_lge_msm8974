@@ -36,14 +36,6 @@
 
 #include "zram_drv.h"
 
-#ifdef CONFIG_LZ4_COMPRESS
-#include <linux/lz4.h>
-#define LZO_COMP "lzo"
-#define LZO_COMP_LEN 3
-#define LZ4_COMP "lz4"
-#define LZ4_COMP_LEN 3
-#endif
-
 /* Globals */
 static int zram_major;
 static struct zram *zram_devices;
@@ -182,19 +174,6 @@ static ssize_t mem_used_total_show(struct device *dev,
 
 	return sprintf(buf, "%llu\n", val);
 }
-
-#ifdef CONFIG_LZ4_COMPRESS
-static ssize_t comp_func_show(struct device *dev,
-    struct device_attribute *attr, char *buf)
-{
-	struct zram *zram = dev_to_zram(dev);
-
-	if (zram->lz4 == true)
-		return sprintf(buf, "%s\n", LZ4_COMP);
-
-	return sprintf(buf, "%s\n", LZO_COMP);
-}
-#endif
 
 static int zram_test_flag(struct zram_meta *meta, u32 index,
 			enum zram_pageflags flag)
@@ -385,18 +364,9 @@ static int zram_decompress_page(struct zram *zram, char *mem, u32 index)
 	cmem = zs_map_object(meta->mem_pool, handle, ZS_MM_RO);
 	if (meta->table[index].size == PAGE_SIZE)
 		copy_page(mem, cmem);
-	else {
-#ifdef CONFIG_LZ4_COMPRESS
-		size_t in_size = meta->table[index].size;
-		if (zram->lz4 == true)
-			ret = lz4_decompress(cmem, &in_size,
-						mem, clen);
-		else
-#endif
-			ret = lzo1x_decompress_safe(cmem, meta->table[index].size,
+	else
+		ret = lzo1x_decompress_safe(cmem, meta->table[index].size,
 						mem, &clen);
-  }
-
 	zs_unmap_object(meta->mem_pool, handle);
 
 	/* Should NEVER happen. Return bio error if it does. */
@@ -515,14 +485,8 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec, u32 index,
 			zram_test_flag(meta, index, ZRAM_ZERO)))
 		zram_free_page(zram, index);
 
-#ifdef CONFIG_LZ4_COMPRESS
-	if (zram->lz4 == true)
-		ret = lz4_compress(uncmem, PAGE_SIZE, src, &clen,
-					meta->compress_workmem);
-	else
-#endif
-		ret = lzo1x_1_compress(uncmem, PAGE_SIZE, src, &clen,
-					meta->compress_workmem);
+	ret = lzo1x_1_compress(uncmem, PAGE_SIZE, src, &clen,
+			       meta->compress_workmem);
 
 	if (!is_partial_io(bvec)) {
 		kunmap_atomic(user_mem);
@@ -755,33 +719,6 @@ out:
 	return ret;
 }
 
-#ifdef CONFIG_LZ4_COMPRESS
-static ssize_t comp_func_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t len)
-{
-	struct zram *zram = dev_to_zram(dev);
-	ssize_t ret = -EINVAL;
-
-	down_write(&zram->init_lock);
-
-	if (zram->init_done)
-		goto fail_store;
-
-	if (!strncmp(buf, LZ4_COMP, LZ4_COMP_LEN))
-		zram->lz4 = true;
-	else if (!strncmp(buf, LZO_COMP, LZO_COMP_LEN))
-		zram->lz4 = false;
-	else
-		goto fail_store;
-
-  ret = len;
-
-fail_store:
-  up_write(&zram->init_lock);
-  return ret;
-}
-#endif
-
 static void __zram_make_request(struct zram *zram, struct bio *bio, int rw)
 {
 	int i, offset;
@@ -916,10 +853,6 @@ static DEVICE_ATTR(zero_pages, S_IRUGO, zero_pages_show, NULL);
 static DEVICE_ATTR(orig_data_size, S_IRUGO, orig_data_size_show, NULL);
 static DEVICE_ATTR(compr_data_size, S_IRUGO, compr_data_size_show, NULL);
 static DEVICE_ATTR(mem_used_total, S_IRUGO, mem_used_total_show, NULL);
-#ifdef CONFIG_LZ4_COMPRESS
-static DEVICE_ATTR(comp_func, S_IRUGO | S_IWUSR,
-		comp_func_show, comp_func_store);
-#endif
 
 static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_disksize.attr,
@@ -933,9 +866,6 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_orig_data_size.attr,
 	&dev_attr_compr_data_size.attr,
 	&dev_attr_mem_used_total.attr,
-#ifdef CONFIG_LZ4_COMPRESS
-	&dev_attr_comp_func.attr,
-#endif
 	NULL,
 };
 
