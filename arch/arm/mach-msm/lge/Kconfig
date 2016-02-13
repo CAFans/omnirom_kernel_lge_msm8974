@@ -177,4 +177,10 @@ config LGE_KRAIT_BOOST_ENABLE
 	help
 	 Select if enable Krait Voltage Boost up.
 
+config LGE_BLUETOOTH
+	bool "Support LGE Bluetooth"
+	depends on BT
+	help
+	  Support for the LGE Bluetooth
+
 endmenu
