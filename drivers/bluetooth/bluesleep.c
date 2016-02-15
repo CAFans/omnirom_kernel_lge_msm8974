@@ -62,6 +62,17 @@
 #ifndef BT_SLEEP_DBG
 #define BT_DBG(fmt, arg...)
 #endif
+
+/* BT DMA Request / For UART */
+#ifndef BT_DMA_QOS_REQUEST
+#define BT_DMA_QOS_REQUEST
+
+#ifdef BT_DMA_QOS_REQUEST
+#define REQUESTED		1
+#define NOT_REQUESTED	2
+#endif /* BT_DMA_QOS_REQUEST */
+#endif /* BT_DMA_QOS_REQUEST */
+
 /*
  * Defines
  */
@@ -94,6 +105,10 @@ struct bluesleep_info {
 	unsigned ext_wake;
 	unsigned host_wake_irq;
 	struct uart_port *uport;
+#ifdef BT_DMA_QOS_REQUEST
+	struct pm_qos_request dma_qos;
+	int dma_qos_request;
+#endif /* BT_DMA_QOS_REQUEST */
 	struct wake_lock wake_lock;
 	int irq_polarity;
 	int has_ext_wake;
@@ -193,14 +208,19 @@ static void hsuart_power(int on)
 int bluesleep_can_sleep(void)
 {
 	/* check if WAKE_BT_GPIO and BT_WAKE_GPIO are both deasserted */
-	return ((gpio_get_value(bsi->host_wake) != bsi->irq_polarity) &&
-		(test_bit(BT_EXT_WAKE, &flags)) &&
+	return (!(gpio_get_value(bsi->host_wake) != bsi->irq_polarity) &&
+		(!test_bit(BT_EXT_WAKE, &flags)) &&
 		(bsi->uport != NULL));
 }
 
 void bluesleep_sleep_wakeup(void)
 {
 	if (test_bit(BT_ASLEEP, &flags)) {
+#ifdef BT_DMA_QOS_REQUEST
+		if(bsi->dma_qos_request == REQUESTED) {
+			pm_qos_update_request(&bsi->dma_qos, 19); 
+		}
+#endif /* BT_DMA_QOS_REQUEST */
 		if (debug_mask & DEBUG_SUSPEND)
 			pr_info("waking up...\n");
 		wake_lock(&bsi->wake_lock);
@@ -209,8 +229,8 @@ void bluesleep_sleep_wakeup(void)
 		if (debug_mask & DEBUG_BTWAKE)
 			pr_info("BT WAKE: set to wake\n");
 		if (bsi->has_ext_wake == 1)
-			gpio_set_value(bsi->ext_wake, 0);
-		clear_bit(BT_EXT_WAKE, &flags);
+			gpio_set_value(bsi->ext_wake, 1);
+		set_bit(BT_EXT_WAKE, &flags);
 		clear_bit(BT_ASLEEP, &flags);
 		/*Activating UART */
 		hsuart_power(1);
@@ -237,6 +257,12 @@ static void bluesleep_sleep_work(struct work_struct *work)
 			set_bit(BT_ASLEEP, &flags);
 			/*Deactivating UART */
 			hsuart_power(0);
+#ifdef BT_DMA_QOS_REQUEST
+		if(bsi->dma_qos_request == REQUESTED) {
+			pm_qos_update_request(&bsi->dma_qos, 0x7FFFFFF);
+		}
+#endif /* BT_DMA_QOS_REQUEST */
+
 			/* UART clk is not turned off immediately. Release
 			 * wakelock after 500 ms.
 			 */
@@ -246,14 +272,14 @@ static void bluesleep_sleep_work(struct work_struct *work)
 		  mod_timer(&tx_timer, jiffies + (TX_TIMER_INTERVAL * HZ));
 			return;
 		}
-	} else if (test_bit(BT_EXT_WAKE, &flags)
+	} else if (!test_bit(BT_EXT_WAKE, &flags)
 			&& !test_bit(BT_ASLEEP, &flags)) {
 		mod_timer(&tx_timer, jiffies + (TX_TIMER_INTERVAL * HZ));
 		if (debug_mask & DEBUG_BTWAKE)
 			pr_info("BT WAKE: set to wake\n");
 		if (bsi->has_ext_wake == 1)
-			gpio_set_value(bsi->ext_wake, 0);
-		clear_bit(BT_EXT_WAKE, &flags);
+			gpio_set_value(bsi->ext_wake, 1);
+		set_bit(BT_EXT_WAKE, &flags);
 	} else {
 		bluesleep_sleep_wakeup();
 	}
@@ -294,7 +320,7 @@ static void bluesleep_outgoing_data(void)
 	spin_unlock_irqrestore(&rw_lock, irq_flags);
 
 	/* if the tx side is sleeping... */
-	if (test_bit(BT_EXT_WAKE, &flags)) {
+	if (!test_bit(BT_EXT_WAKE, &flags)) {
 		if (debug_mask & DEBUG_SUSPEND)
 			pr_info("tx was sleeping\n");
 		bluesleep_sleep_wakeup();
@@ -426,8 +452,8 @@ static void bluesleep_tx_timer_expire(unsigned long data)
 		if (debug_mask & DEBUG_BTWAKE)
 			pr_info("BT WAKE: set to sleep\n");
 		if (bsi->has_ext_wake == 1)
-			gpio_set_value(bsi->ext_wake, 1);
-		set_bit(BT_EXT_WAKE, &flags);
+			gpio_set_value(bsi->ext_wake, 0);
+		clear_bit(BT_EXT_WAKE, &flags);
 		bluesleep_tx_idle();
 	} else {
 		if (debug_mask & DEBUG_SUSPEND)
@@ -486,8 +512,16 @@ static int bluesleep_start(void)
 	if (debug_mask & DEBUG_BTWAKE)
 		pr_info("BT WAKE: set to wake\n");
 	if (bsi->has_ext_wake == 1)
-		gpio_set_value(bsi->ext_wake, 0);
-	clear_bit(BT_EXT_WAKE, &flags);
+
+#ifdef BT_DMA_QOS_REQUEST
+	if(bsi->dma_qos_request == NOT_REQUESTED) {
+		bsi->dma_qos_request = REQUESTED;
+		pm_qos_add_request(&bsi->dma_qos, PM_QOS_CPU_DMA_LATENCY, 19);
+	}
+#endif /* BT_DMA_QOS_REQUEST */
+
+		gpio_set_value(bsi->ext_wake, 1);
+	set_bit(BT_EXT_WAKE, &flags);
 #if BT_ENABLE_IRQ_WAKE
 	retval = enable_irq_wake(bsi->host_wake_irq);
 	if (retval < 0) {
@@ -523,8 +557,8 @@ static void bluesleep_stop(void)
 	if (debug_mask & DEBUG_BTWAKE)
 		pr_info("BT WAKE: set to wake\n");
 	if (bsi->has_ext_wake == 1)
-		gpio_set_value(bsi->ext_wake, 0);
-	clear_bit(BT_EXT_WAKE, &flags);
+		gpio_set_value(bsi->ext_wake, 1);
+	set_bit(BT_EXT_WAKE, &flags);
 	del_timer(&tx_timer);
 	clear_bit(BT_PROTO, &flags);
 
@@ -542,6 +576,14 @@ static void bluesleep_stop(void)
 	if (disable_irq_wake(bsi->host_wake_irq))
 		BT_ERR("Couldn't disable hostwake IRQ wakeup mode");
 #endif
+
+#ifdef BT_DMA_QOS_REQUEST
+	if(bsi->dma_qos_request == REQUESTED) {
+		pm_qos_remove_request(&bsi->dma_qos);
+		bsi->dma_qos_request = NOT_REQUESTED;
+	}
+#endif /* BT_DMA_QOS_REQUEST */
+
 	wake_lock_timeout(&bsi->wake_lock, HZ / 2);
 }
 /**
@@ -713,14 +755,14 @@ static int bluesleep_populate_dt_pinfo(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	int tmp;
 
-	tmp = of_get_named_gpio(np, "bt_host_wake", 0);
+	tmp = of_get_named_gpio(np, "host-wake-gpio", 0);
 	if (tmp < 0) {
 		BT_ERR("couldn't find host_wake gpio");
 		return -ENODEV;
 	}
 	bsi->host_wake = tmp;
 
-	tmp = of_get_named_gpio(np, "bt_ext_wake", 0);
+	tmp = of_get_named_gpio(np, "ext-wake-gpio", 0);
 	if (tmp < 0)
 		bsi->has_ext_wake = 0;
 	else
@@ -729,7 +771,7 @@ static int bluesleep_populate_dt_pinfo(struct platform_device *pdev)
 	if (bsi->has_ext_wake)
 		bsi->ext_wake = tmp;
 
-	BT_INFO("bt_host_wake %d, bt_ext_wake %d",
+	BT_INFO("host-wake-gpio %d, ext-wake-gpio %d",
 			bsi->host_wake,
 			bsi->ext_wake);
 	return 0;
@@ -784,7 +826,7 @@ static int bluesleep_probe(struct platform_device *pdev)
 	}
 
 	/* configure host_wake as input */
-	ret = gpio_request_one(bsi->host_wake, GPIOF_IN, "bt_host_wake");
+	ret = gpio_request_one(bsi->host_wake, GPIOF_IN, "gpio_host_wake");
 	if (ret < 0) {
 		BT_ERR("failed to configure input"
 				" direction for GPIO %d, error %d",
@@ -797,7 +839,7 @@ static int bluesleep_probe(struct platform_device *pdev)
 	if (bsi->has_ext_wake) {
 		/* configure ext_wake as output mode*/
 		ret = gpio_request_one(bsi->ext_wake,
-				GPIOF_OUT_INIT_LOW, "bt_ext_wake");
+				GPIOF_OUT_INIT_HIGH, "gpio_ext_wake");
 		if (ret < 0) {
 			BT_ERR("failed to configure output"
 				" direction for GPIO %d, error %d",
@@ -821,7 +863,10 @@ static int bluesleep_probe(struct platform_device *pdev)
 		goto free_bt_ext_wake;
 	}
 
-	bsi->irq_polarity = POLARITY_LOW;/*low edge (falling edge)*/
+#ifdef BT_DMA_QOS_REQUEST
+	bsi->dma_qos_request = NOT_REQUESTED;
+#endif /* BT_DMA_QOS_REQUEST */
+		bsi->irq_polarity = POLARITY_HIGH;/*anything else*/
 
 	wake_lock_init(&bsi->wake_lock, WAKE_LOCK_SUSPEND, "bluesleep");
 	clear_bit(BT_SUSPEND, &flags);
@@ -831,7 +876,7 @@ static int bluesleep_probe(struct platform_device *pdev)
 			bsi->irq_polarity);
 
 	ret = request_irq(bsi->host_wake_irq, bluesleep_hostwake_isr,
-			IRQF_DISABLED | IRQF_TRIGGER_FALLING,
+			IRQF_DISABLED | IRQF_TRIGGER_RISING,
 			"bluetooth hostwake", NULL);
 	if (ret  < 0) {
 		BT_ERR("Couldn't acquire BT_HOST_WAKE IRQ");
@@ -886,7 +931,7 @@ static int bluesleep_suspend(struct platform_device *pdev, pm_message_t state)
 }
 
 static struct of_device_id bluesleep_match_table[] = {
-	{ .compatible = "qcom,bluesleep" },
+	{ .compatible = "lge,bcm_bluesleep" },
 	{}
 };
 
@@ -1015,8 +1060,8 @@ static int __init bluesleep_init(void)
 	if (debug_mask & DEBUG_BTWAKE)
 		pr_info("BT WAKE: set to wake\n");
 	if (bsi->has_ext_wake == 1)
-		gpio_set_value(bsi->ext_wake, 0);
-	clear_bit(BT_EXT_WAKE, &flags);
+		gpio_set_value(bsi->ext_wake, 1);
+	set_bit(BT_EXT_WAKE, &flags);
 #if !BT_BLUEDROID_SUPPORT
 	hci_register_notifier(&hci_event_nblock);
 #endif
@@ -1047,8 +1092,8 @@ static void __exit bluesleep_exit(void)
 
 	/* assert bt wake */
 	if (bsi->has_ext_wake == 1)
-		gpio_set_value(bsi->ext_wake, 0);
-	clear_bit(BT_EXT_WAKE, &flags);
+		gpio_set_value(bsi->ext_wake, 1);
+	set_bit(BT_EXT_WAKE, &flags);
 	if (test_bit(BT_PROTO, &flags)) {
 		if (disable_irq_wake(bsi->host_wake_irq))
 			BT_ERR("Couldn't disable hostwake IRQ wakeup mode");
@@ -1082,3 +1127,4 @@ MODULE_DESCRIPTION("Bluetooth Sleep Mode Driver ver %s " VERSION);
 #ifdef MODULE_LICENSE
 MODULE_LICENSE("GPL");
 #endif
+
