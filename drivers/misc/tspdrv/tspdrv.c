@@ -75,12 +75,6 @@ static atomic_t g_nDebugLevel;
 
 static char g_cWriteBuffer[MAX_SPI_BUFFER_SIZE];
 
-
-
-#if ((LINUX_VERSION_CODE & 0xFFFF00) < KERNEL_VERSION(2,6,0))
-#error Unsupported Kernel version
-#endif
-
 #ifndef HAVE_UNLOCKED_IOCTL
 #define HAVE_UNLOCKED_IOCTL 0
 #endif
@@ -89,15 +83,9 @@ static char g_cWriteBuffer[MAX_SPI_BUFFER_SIZE];
 static int g_nMajor = 0;
 #endif
 
-
-
 /* Needs to be included after the global variables because they use them */
 #include "tspdrvOutputDataHandler.c"
-#ifdef CONFIG_HIGH_RES_TIMERS
-    #include "VibeOSKernelLinuxHRTime.c"
-#else
-    #include "VibeOSKernelLinuxTime.c"
-#endif
+#include "VibeOSKernelLinuxHRTime.c"
 
 asmlinkage void _DbgOut(int level, const char *fmt,...)
 {
@@ -186,11 +174,6 @@ MODULE_AUTHOR("Immersion Corporation");
 MODULE_DESCRIPTION("TouchSense Kernel Module");
 MODULE_LICENSE("GPL v2");
 
-#if 1
-/* LGE_CHANGED_START
-  * Vibrator on/off device file is added(vib_enable)
-  * 2012.11.11, sehwan.lee@lge.com
-  */
 static int val = 0;
 
 static ssize_t
@@ -229,9 +212,6 @@ immersion_enable_show(struct device *dev, struct device_attribute *attr,   char 
 static struct device_attribute immersion_device_attrs[] = {
 	__ATTR(vib_enable,  S_IRUGO | S_IWUSR, immersion_enable_show, immersion_enable_store),
 };
-
-/* LGE_CHANGED_END 2012.11.11, sehwan.lee@lge.com */
-#endif
 
 static int __init tspdrv_init(void)
 {
@@ -272,19 +252,12 @@ static int __init tspdrv_init(void)
     {
         DbgOut((DBL_ERROR, "tspdrv: platform_driver_register failed.\n"));
     }
-#if 1
-/* LGE_CHANGED_START
-  * Vibrator on/off device file is added(vib_enable)
-  * 2012.11.11, sehwan.lee@lge.com
-  */
 	for (i = 0; i < ARRAY_SIZE(immersion_device_attrs); i++) {
 			nRet = device_create_file(miscdev.this_device, &immersion_device_attrs[i]);
 			if (nRet)
 				return nRet;
 	}
 
-/* LGE_CHANGED_END 2012.11.11, sehwan.lee@lge.com */
-#endif
     DbgRecorderInit(());
 
     ImmVibeSPI_ForceOut_Initialize();
@@ -542,13 +515,8 @@ static int ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsig
                     case VIBE_KP_CFG_UPDATE_RATE_MS:
                         /* Update the timer period */
                         g_nTimerPeriodMs = deviceParam.nDeviceParamValue;
-
-
-
-#ifdef CONFIG_HIGH_RES_TIMERS
                         /* For devices using high resolution timer we need to update the ktime period value */
                         g_ktTimerPeriod = ktime_set(0, g_nTimerPeriodMs * 1000000);
-#endif
                         break;
 
                     case VIBE_KP_CFG_FREQUENCY_PARAM1:
@@ -557,13 +525,6 @@ static int ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsig
                     case VIBE_KP_CFG_FREQUENCY_PARAM4:
                     case VIBE_KP_CFG_FREQUENCY_PARAM5:
                     case VIBE_KP_CFG_FREQUENCY_PARAM6:
-#if 0
-                        if (0 > ImmVibeSPI_ForceOut_SetFrequency(deviceParam.nDeviceIndex, deviceParam.nDeviceParamID, deviceParam.nDeviceParamValue))
-                        {
-                            DbgOut((DBL_ERROR, "tspdrv: cannot set device frequency parameter.\n"));
-                            return -1;
-                        }
-#endif
                         break;
                 }
             }
