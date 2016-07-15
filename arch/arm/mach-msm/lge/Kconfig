@@ -25,6 +25,12 @@ config LGE_HANDLE_PANIC
     help
       LGE Error handler
 
+config LGE_BLUETOOTH
+	bool "Support LGE Bluetooth"
+	depends on BT
+	help
+	  Support for the LGE Bluetooth
+
 config LGE_BOOTLOADER_LOG
 	tristate "Support LGE bootloader log"
 	default n
